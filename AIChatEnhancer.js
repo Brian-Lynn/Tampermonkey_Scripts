@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         多功能 AI 助手 (All-in-One AI Helper)
+// @name         多功能 AI 助手 (All-in-One AI Helper) v5.1
 // @namespace    http://tampermonkey.net/
-// @version      4.6
-// @description  【终极修复版】1. 公式复制器保持稳定。2. 修复v4.5版本中因无限循环导致的页面崩溃问题，让换行与发送功能恢复正常。
+// @version      5.1
+// @description  【Claude修复版】1. 修复Claude回车发送问题。2. 公式复制器保持稳定。3. 修复v4.5版本中因无限循环导致的页面崩溃问题。
 // @author       You & Gemini
 // @match        https://chatgpt.com/*
 // @match        https://chat.deepseek.com/*
@@ -12,7 +12,7 @@
 // @match        https://grok.com/*
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -112,72 +112,84 @@
     }
 
 
-    // --- 功能二：回车不发送 (v4.6 修复版) ---
-    (function EnterNoSend() {
-        console.log("回车不发送: 模块已启动 (v4.6 状态管理修复版)。");
+    // --- 功能二：回车不发送/统一发送键（2.1逻辑移植，兼容多站） ---
+    (function EnterNoSendUnified() {
+        console.log("回车不发送/统一发送键: 采用2.1.js核心逻辑，已启动。");
 
-        let ctrlKeyPressed = false;
-        let isDispatching = false; // 关键：用于防止无限循环的“旗标”
+        const SCRIPT_NAME = 'AIChatEnhancer-EnterNoSend';
+        const hostname = window.location.hostname;
 
-        // 监听 Ctrl 键的按下和抬起
-        document.body.addEventListener('keydown', (e) => {
-            if (e.key === 'Control') {
-                ctrlKeyPressed = true;
-            }
-        }, true);
+        /**
+         * 辅助函数：创建一个可配置的键盘事件。
+         * @param {string} type - 事件类型, 'keydown' 或 'keyup'.
+         * @param {object} options - 按键事件的配置.
+         * @returns {KeyboardEvent}
+         */
+        function createKeyEvent(type, options) {
+            const event = new KeyboardEvent(type, {
+                key: options.key || 'Enter',
+                code: options.code || 'Enter',
+                keyCode: options.keyCode || 13,
+                which: options.which || 13,
+                shiftKey: !!options.shiftKey,
+                ctrlKey: !!options.ctrlKey,
+                altKey: !!options.altKey,
+                metaKey: !!options.metaKey,
+                bubbles: true,
+                cancelable: true
+            });
+            // 添加一个标志，防止我们自己的监听器响应自己创建的事件
+            Object.defineProperty(event, 'isTriggeredByScript', { value: true, writable: false });
+            return event;
+        }
 
-        document.body.addEventListener('keyup', (e) => {
-            if (e.key === 'Control') {
-                ctrlKeyPressed = false;
-            }
-        }, true);
+        // 在捕获阶段添加事件监听器，确保最高优先级
+        document.addEventListener('keydown', (e) => {
+            if (e.isTriggeredByScript) return; // 忽略自己派发的事件
 
-        // 核心逻辑监听器
-        document.body.addEventListener('keydown', function(e) {
-            // 如果是脚本自己派发的事件，则直接忽略
-            if (isDispatching) {
-                return;
-            }
+            const target = e.target;
+            const isInputArea = target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox';
 
-            const activeElement = document.activeElement;
-            const isInputArea = activeElement && (
-                activeElement.tagName === 'TEXTAREA' ||
-                activeElement.getAttribute('role') === 'textbox' ||
-                activeElement.isContentEditable
-            );
+            if (!isInputArea || e.key !== 'Enter') return;
 
-            if (!isInputArea) return;
+            // --- 场景一：使用 Ctrl+Enter 发送消息 ---
+            if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
 
-            if (e.key === 'Enter') {
-                if (ctrlKeyPressed || e.ctrlKey) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    const enterEvent = new KeyboardEvent('keydown', {
-                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-                        bubbles: true, cancelable: true
-                    });
-
-                    isDispatching = true; // 在派发前升起“旗标”
-                    activeElement.dispatchEvent(enterEvent);
-                    isDispatching = false; // 派发后降下“旗标”
-                }
-                else if (!e.shiftKey && !e.altKey && !e.metaKey) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                     const shiftEnterEvent = new KeyboardEvent('keydown', {
-                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-                        shiftKey: true, // 模拟 Shift+Enter
-                        bubbles: true, cancelable: true
-                    });
-
-                    isDispatching = true; // 在派发前升起“旗标”
-                    activeElement.dispatchEvent(shiftEnterEvent);
-                    isDispatching = false; // 派发后降下“旗标”
+                // 根据不同网站执行不同策略
+                if (hostname.includes('qwen.ai')) {
+                    console.log(`[${SCRIPT_NAME}] Qwen 策略: 点击发送按钮。`);
+                    const sendButton = document.getElementById('send-message-button');
+                    sendButton?.click();
+                } else {
+                    // 默认策略（包括 ChatGPT），模拟一次干净的 Enter 按键
+                    console.log(`[${SCRIPT_NAME}] 默认/GPT 策略: 模拟 Enter 按键发送。`);
+                    target.dispatchEvent(createKeyEvent('keydown', {}));
+                    target.dispatchEvent(createKeyEvent('keyup', {}));
                 }
             }
+            // --- 场景二：使用单独的 Enter 换行 ---
+            else if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                // 根据不同网站执行不同策略
+                if (hostname.includes('chatgpt.com') || hostname.includes('chat.openai.com')) {
+                    // ChatGPT 策略: 模拟 Shift+Enter 来换行
+                    console.log(`[${SCRIPT_NAME}] GPT 策略: 模拟 Shift+Enter 换行。`);
+                    target.dispatchEvent(createKeyEvent('keydown', { shiftKey: true }));
+                } else {
+                    // 默认策略（包括 Qwen）：使用 execCommand 插入换行符
+                    console.log(`[${SCRIPT_NAME}] 默认/Qwen 策略: 命令换行。`);
+                    document.execCommand('insertText', false, '\n');
+                }
+            }
+            // 对于其他组合键（如原生 Shift+Enter），脚本不干预
+
         }, true);
+
+        console.log(`[${SCRIPT_NAME}] 智能适配事件监听器已成功设置。`);
     })();
 
 })();
