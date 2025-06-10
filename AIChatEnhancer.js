@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      5.1
 // @description  1.阻止enter发送行为，改为ctrl+enter组合键发送，防止误发送浪费ai次数/token。2.对于数学/物理等公式，支持点击复制latex代码，防止格式错乱（gemini暂不支持）。
-// @author       0xbbbb
+// @author       0xbbbb & Gemini & GPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.deepseek.com/*
 // @match        https://chat.qwen.ai/*
