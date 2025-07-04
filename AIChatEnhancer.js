@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         AI平台_Web体验优化 v5.1
+// @name         AI平台_Web体验优化 (强力拦截版 v6.5)
 // @namespace    http://tampermonkey.net/
-// @version      5.1
-// @description  1.阻止enter发送行为，改为ctrl+enter组合键发送，防止误发送浪费ai次数/token。2.对于数学/物理等公式，支持点击复制latex代码，防止格式错乱（gemini暂不支持）。
-// @author       0xbbbb & Gemini & GPT
+// @version      6.5
+// @description  【强力拦截版】1. 彻底阻止Enter键直接发送，改为Ctrl+Enter发送。为Qwen增加ID选择器，优先点击按钮发送。2. 支持点击复制数学公式的LaTeX代码。
+// @author       0xbbbb & Gemini & GPT (重构 by Gemini)
 // @match        https://chatgpt.com/*
 // @match        https://chat.deepseek.com/*
 // @match        https://chat.qwen.ai/*
@@ -13,259 +13,218 @@
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @run-at       document-start
+// @downloadURL  https://update.greasyfork.org/scripts/539014/AI%E5%B9%B3%E5%8F%B0_Web%E4%BD%93%E9%AA%8C%E4%BC%98%E5%8C%96%20v65.user.js
+// @updateURL    https://update.greasyfork.org/scripts/539014/AI%E5%B9%B3%E5%8F%B0_Web%E4%BD%93%E9%AA%8C%E4%BC%98%E5%8C%96%20v65.meta.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
+    const SCRIPT_NAME = 'AIChatEnhancer-v6.5';
     const currentHostname = window.location.hostname;
 
     // --- 模块一：公式复制器 ---
-    // 目标：方便地从渲染后的数学公式中提取并复制其 LaTeX 源码。
-    // 策略：通过 MutationObserver 监控页面动态加载的公式，并为其绑定点击事件。
-    // 排除范围：在 Gemini 和 Claude 上禁用，以避免潜在的兼容性问题或功能冗余。
     if (!currentHostname.includes('gemini.google.com') && !currentHostname.includes('claude.ai')) {
         (function FormulaCopier() {
-            console.log("模块【公式复制器】: 已启动。");
-
-            // 注入UI样式：选中效果和复制成功反馈提示
-            GM_addStyle(`
-                .formula-copier-selected {
-                    outline: 2px solid #4A90E2 !important; /* 蓝色高亮轮廓 */
-                    border-radius: 5px;
-                    cursor: pointer;
-                    box-shadow: 0 0 5px rgba(74, 144, 226, 0.5);
+             function initFormulaCopier() {
+                if (!document.body) { setTimeout(initFormulaCopier, 100); return; }
+                console.log(`[${SCRIPT_NAME}] DOM ready, 启动【公式复制器】。`);
+                GM_addStyle(`
+                    .formula-copier-selected { outline: 2px solid #4A90E2 !important; border-radius: 5px; cursor: pointer; box-shadow: 0 0 5px rgba(74, 144, 226, 0.5); }
+                    .formula-copier-feedback { position: fixed; background-color: #4A90E2; color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; z-index: 10001; pointer-events: none; opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease; transform: translateY(10px); }
+                    .formula-copier-feedback.visible { opacity: 1; transform: translateY(0); }
+                `);
+                let selectedElement = null;
+                function showCopyFeedback(element) {
+                    const rect = element.getBoundingClientRect();
+                    const feedback = document.createElement('div');
+                    feedback.textContent = 'LaTeX 已复制!';
+                    feedback.classList.add('formula-copier-feedback');
+                    document.body.appendChild(feedback);
+                    feedback.style.left = `${rect.left + rect.width / 2 - feedback.offsetWidth / 2}px`;
+                    feedback.style.top = `${rect.top - feedback.offsetHeight - 8}px`;
+                    setTimeout(() => { feedback.classList.add('visible'); }, 10);
+                    setTimeout(() => {
+                        feedback.style.opacity = '0';
+                        feedback.style.transform = 'translateY(10px)';
+                        setTimeout(() => feedback.remove(), 300);
+                    }, 1500);
                 }
-                .formula-copier-feedback {
-                    position: absolute;
-                    background-color: #4A90E2;
-                    color: white;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                    z-index: 10001;
-                    pointer-events: none;
-                    opacity: 0;
-                    transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
-                    transform: translateY(10px);
-                }
-                .formula-copier-feedback.visible {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-            `);
-
-            let selectedElement = null; // 存储当前被选中的公式元素
-
-            /**
-             * 在元素上方显示“已复制”的反馈提示。
-             * @param {HTMLElement} element - 显示提示的目标元素。
-             */
-            function showCopyFeedback(element) {
-                const rect = element.getBoundingClientRect();
-                const feedback = document.createElement('div');
-                feedback.textContent = '已复制!';
-                feedback.classList.add('formula-copier-feedback');
-                document.body.appendChild(feedback);
-
-                // 计算提示框的位置，使其位于元素正上方
-                const fbLeft = window.scrollX + rect.left + rect.width / 2 - feedback.offsetWidth / 2;
-                const fbTop = window.scrollY + rect.top - feedback.offsetHeight - 8;
-                feedback.style.left = `${fbLeft}px`;
-                feedback.style.top = `${fbTop}px`;
-
-                // 触发显示动画并定时移除
-                setTimeout(() => {
-                    feedback.classList.add('visible');
-                }, 10);
-                setTimeout(() => {
-                    feedback.style.opacity = '0';
-                    feedback.style.transform = 'translateY(10px)';
-                    setTimeout(() => feedback.remove(), 300);
-                }, 1500);
-            }
-
-            /**
-             * 清除当前选中的公式的高亮状态。
-             */
-            function clearSelection() {
-                if (selectedElement) {
-                    selectedElement.classList.remove('formula-copier-selected');
-                    selectedElement = null;
-                }
-            }
-
-            /**
-             * 从公式容器元素中提取 LaTeX 源码。
-             * @param {HTMLElement} containerElement - 包含 LaTeX 源码的父元素。
-             * @returns {string|null} 提取到的 LaTeX 源码，或在未找到时返回 null。
-             */
-            function getLatexSource(containerElement) {
-                // 兼容 KaTeX 和 MathJax 的源码存储方式
-                const annotation = containerElement.querySelector('annotation[encoding="application/x-tex"], annotation[encoding="text/x-latex"]');
-                if (annotation && annotation.textContent) {
-                    // 清理字符串，移除多余的 \tag
-                    return annotation.textContent.trim().replace(/\s*\\tag\{.*\}/, '').trim();
-                }
-                return null;
-            }
-
-            /**
-             * 处理公式的点击事件。
-             * 第一次点击：选中公式。
-             * 第二次点击（相同公式）：复制 LaTeX 源码并取消选中。
-             * @param {MouseEvent} event - 点击事件对象。
-             */
-            function handleFormulaClick(event) {
-                event.stopPropagation(); // 防止事件冒泡干扰页面其他功能
-                const target = event.currentTarget;
-
-                if (target === selectedElement) {
-                    // 第二次点击：复制并清除
-                    const latex = getLatexSource(target);
-                    if (latex) {
-                        GM_setClipboard(latex);
-                        showCopyFeedback(target);
+                function clearSelection() {
+                    if (selectedElement) {
+                        selectedElement.classList.remove('formula-copier-selected');
+                        selectedElement = null;
                     }
-                    clearSelection();
-                } else {
-                    // 第一次点击：清除旧的，选中新的
-                    clearSelection();
-                    selectedElement = target;
-                    selectedElement.classList.add('formula-copier-selected');
                 }
-            }
-
-            /**
-             * 在指定的根节点下查找并为所有公式元素绑定点击事件。
-             * @param {Node} rootNode - 开始搜索的 DOM 节点。
-             */
-            function findAndBind(rootNode) {
-                if (rootNode.nodeType !== Node.ELEMENT_NODE) return;
-
-                // 查找 KaTeX 或 MathJax 渲染的公式容器
-                const formulas = rootNode.querySelectorAll('.katex, .katex-display, .mjx-container');
-                formulas.forEach(formula => {
-                    // 添加标记以避免重复绑定
-                    if (formula.dataset.formulaCopierAttached) return;
-                    if (formula.closest('[data-formula-copier-attached="true"]')) return; // 避免子元素重复绑定
-
-                    formula.dataset.formulaCopierAttached = 'true';
-                    formula.addEventListener('click', handleFormulaClick);
+                function getLatexSource(containerElement) {
+                    const annotation = containerElement.querySelector('annotation[encoding="application/x-tex"], annotation[encoding="text/x-latex"]');
+                    return annotation ? annotation.textContent.trim().replace(/\s*\\tag\{.*\}/, '').trim() : null;
+                }
+                function handleFormulaClick(event) {
+                    event.stopPropagation();
+                    const target = event.currentTarget;
+                    if (target === selectedElement) {
+                        const latex = getLatexSource(target);
+                        if (latex) {
+                            GM_setClipboard(latex);
+                            showCopyFeedback(target);
+                        }
+                        clearSelection();
+                    } else {
+                        clearSelection();
+                        selectedElement = target;
+                        selectedElement.classList.add('formula-copier-selected');
+                    }
+                }
+                function findAndBind(rootNode) {
+                    if (!rootNode || rootNode.nodeType !== Node.ELEMENT_NODE) return;
+                    const formulas = rootNode.querySelectorAll('.katex, .katex-display, .mjx-container');
+                    formulas.forEach(formula => {
+                        if (formula.dataset.formulaCopierAttached || formula.closest('[data-formula-copier-attached="true"]')) return;
+                        formula.dataset.formulaCopierAttached = 'true';
+                        formula.addEventListener('click', handleFormulaClick);
+                    });
+                }
+                const observer = new MutationObserver(mutations => {
+                    for (const mutation of mutations) {
+                        if (mutation.addedNodes.length) {
+                            mutation.addedNodes.forEach(node => findAndBind(node));
+                        }
+                    }
                 });
-            }
-
-            // 使用 MutationObserver 监听整个文档，以处理动态加载的内容（如AI的流式输出）
-            const observer = new MutationObserver(mutations => {
-                for (const mutation of mutations) {
-                    if (mutation.addedNodes.length) {
-                        mutation.addedNodes.forEach(node => findAndBind(node));
+                findAndBind(document.body);
+                observer.observe(document.body, { childList: true, subtree: true });
+                document.addEventListener('click', (event) => {
+                    if (selectedElement && !selectedElement.contains(event.target)) {
+                        clearSelection();
                     }
-                }
-            });
-
-            // 初始执行一次，并启动监听
-            findAndBind(document.body);
-            observer.observe(document.body, { childList: true, subtree: true });
-
-            // 添加全局点击事件监听器，用于取消公式选中状态
-            document.addEventListener('click', (event) => {
-                if (selectedElement && !selectedElement.contains(event.target)) {
-                    clearSelection();
-                }
-            }, true);
+                }, true);
+            }
+            if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initFormulaCopier); } else { initFormulaCopier(); }
         })();
     }
 
 
-    // --- 模块二：回车/Ctrl+Enter 增强 ---
-    // 目标：统一所有支持的 AI 网站的快捷键行为。
-    // 策略：拦截原生的 Enter 键事件。将“单独按 Enter”映射为换行，将“Ctrl+Enter”映射为发送。
-    //       使用事件捕获阶段进行监听，确保最高优先级，防止被网站自身的脚本覆盖。
-    (function EnterNoSendUnified() {
-        console.log("模块【回车增强】: 采用2.1.js核心逻辑，已启动。");
+    // --- 模块二：回车/Ctrl+Enter 增强 (强力拦截版 v6.5) ---
+    (function EnterNoSendEnhanced() {
+        console.log(`[${SCRIPT_NAME}] 模块【回车增强-强力拦截版】: 准备加载。`);
 
-        const SCRIPT_NAME = 'AIChatEnhancer-EnterNoSend';
-        const hostname = window.location.hostname;
-
-        /**
-         * 辅助函数：创建一个可配置的键盘事件。
-         * @param {string} type - 事件类型, 'keydown' 或 'keyup'.
-         * @param {object} options - 按键事件的配置 (key, code, keyCode, shiftKey 等).
-         * @returns {KeyboardEvent}
-         */
         function createKeyEvent(type, options) {
             const event = new KeyboardEvent(type, {
-                key: options.key || 'Enter',
-                code: options.code || 'Enter',
-                keyCode: options.keyCode || 13,
-                which: options.which || 13,
-                shiftKey: !!options.shiftKey,
-                ctrlKey: !!options.ctrlKey,
-                altKey: !!options.altKey,
-                metaKey: !!options.metaKey,
-                bubbles: true,
-                cancelable: true
+                key: options.key || 'Enter', code: options.code || 'Enter', keyCode: options.keyCode || 13, which: options.which || 13,
+                shiftKey: !!options.shiftKey, ctrlKey: !!options.ctrlKey, altKey: !!options.altKey, metaKey: !!options.metaKey,
+                bubbles: true, cancelable: true
             });
-            // 添加一个自定义属性，用于识别是脚本自身派发的事件，避免无限循环
             Object.defineProperty(event, 'isTriggeredByScript', { value: true, writable: false });
             return event;
         }
 
-        // 在捕获阶段添加事件监听器，以确保最高优先级
-        document.addEventListener('keydown', (e) => {
-            // 如果是脚本自己触发的事件，则直接忽略，防止死循环
+        function simulateAdvancedEnter(target) {
+            console.log(`[${SCRIPT_NAME}] 启动高级Enter模拟发送...`);
+            target.focus();
+            const beforeInput = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertLineBreak', data: null });
+            target.dispatchEvent(beforeInput);
+            if (!beforeInput.defaultPrevented) {
+                console.log(`[${SCRIPT_NAME}] 'beforeinput' 未被阻止，继续完整模拟流程。`);
+                target.dispatchEvent(createKeyEvent('keydown', {}));
+                const inputEvent = new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertLineBreak' });
+                target.dispatchEvent(inputEvent);
+                target.dispatchEvent(createKeyEvent('keyup', {}));
+            } else {
+                 console.log(`[${SCRIPT_NAME}] 'beforeinput' 已被框架处理，模拟完成。`);
+            }
+        }
+
+        function handleKeyDown(e) {
             if (e.isTriggeredByScript) return;
+            if (e.key !== 'Enter' || e.altKey || e.metaKey || e.shiftKey) return;
 
-            const target = e.target;
-            const isInputArea = target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox';
-
-            // 如果事件不是发生在输入区，或者按下的不是 Enter 键，则不处理
-            if (!isInputArea || e.key !== 'Enter') return;
-
-            // --- 场景一：用户按下 Ctrl+Enter (发送消息) ---
-            if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+            if (e.ctrlKey) {
                 console.log(`[${SCRIPT_NAME}] 检测到 Ctrl+Enter，执行发送。`);
-                e.preventDefault();
-                e.stopImmediatePropagation(); // 阻止其他任何监听器处理此事件
+                e.preventDefault(); e.stopImmediatePropagation();
 
-                // 对特定网站进行适配
-                if (hostname.includes('qwen.ai')) {
-                    // 通义千问：通过点击按钮发送
-                    console.log(`[${SCRIPT_NAME}] 适配[通义千问]：点击发送按钮。`);
-                    const sendButton = document.querySelector('button[data-spm-anchor-id*="send"]'); // 使用更可靠的选择器
-                    sendButton?.click();
+                let sendButton;
+
+                // 核心修复：针对Qwen，优先使用ID选择器点击按钮
+                if (currentHostname.includes('qwen.ai')) {
+                    sendButton = document.querySelector('#send-message-button');
+                    if (sendButton && !sendButton.disabled) {
+                        console.log(`[${SCRIPT_NAME}] 适配[Qwen]：通过ID找到发送按钮并执行 click()。`, sendButton);
+                        sendButton.click();
+                        return; // 成功发送，任务结束
+                    }
+                    // 如果找不到按钮，才使用备用的高级模拟方案
+                    console.warn(`[${SCRIPT_NAME}] 适配[Qwen]：ID选择器未找到按钮，回退到高级事件模拟。`);
+                    simulateAdvancedEnter(e.target);
+                    return;
+                }
+
+                // 其他网站的逻辑保持不变
+                if (currentHostname.includes('chatgpt.com')) {
+                    sendButton = document.querySelector('button[data-testid="send-button"]');
+                } else if (currentHostname.includes('claude.ai')) {
+                    sendButton = document.querySelector('button[aria-label="Send Message"]') || document.querySelector('button[aria-label="发送消息"]');
+                } else if (currentHostname.includes('deepseek.com')) {
+                    sendButton = document.querySelector('button.ds-it-btn-send');
+                }
+
+                if (sendButton && !sendButton.disabled) {
+                    console.log(`[${SCRIPT_NAME}] 适配[${currentHostname}]：找到发送按钮并执行 click()。`, sendButton);
+                    sendButton.click();
                 } else {
-                    // 默认策略 (适用于 ChatGPT, Claude, Deepseek 等): 模拟一个纯粹的 Enter 按键事件来触发表单提交
-                     console.log(`[${SCRIPT_NAME}] 适配[默认/ChatGPT/Claude]：模拟原生 Enter 发送。`);
-                    target.dispatchEvent(createKeyEvent('keydown', {}));
-                    target.dispatchEvent(createKeyEvent('keyup', {}));
+                    console.warn(`[${SCRIPT_NAME}] 适配[${currentHostname}]：未找到发送按钮，回退到模拟原生Enter发送。`);
+                    e.target.dispatchEvent(createKeyEvent('keydown', {}));
+                }
+            } else {
+                console.log(`[${SCRIPT_NAME}] 检测到单独的 Enter，执行换行。`);
+                e.preventDefault(); e.stopImmediatePropagation();
+                e.target.dispatchEvent(createKeyEvent('keydown', { key: 'Enter', shiftKey: true }));
+            }
+        }
+
+        function blockEnterPropagation(e) {
+            if (e.isTriggeredByScript) return;
+            if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+                e.preventDefault(); e.stopImmediatePropagation();
+            }
+        }
+
+        function attachInterceptor(element) {
+            if (element.dataset.enterInterceptorAttached) return;
+            if (element.offsetParent === null) return;
+            console.log(`[${SCRIPT_NAME}] 发现可见输入框，正在附加强力拦截器...`, element);
+            element.addEventListener('keydown', handleKeyDown, true);
+            element.addEventListener('keypress', blockEnterPropagation, true);
+            element.addEventListener('keyup', blockEnterPropagation, true);
+            element.dataset.enterInterceptorAttached = 'true';
+        }
+
+        const observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                if (mutation.addedNodes.length) {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const targets = [];
+                            if (node.matches('textarea, div[contenteditable="true"]')) {
+                                targets.push(node);
+                            }
+                            targets.push(...node.querySelectorAll('textarea, div[contenteditable="true"]'));
+                            targets.forEach(attachInterceptor);
+                        }
+                    });
                 }
             }
-            // --- 场景二：用户只按下 Enter (换行) ---
-            else if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-                console.log(`[${SCRIPT_NAME}] 检测到 Enter，执行换行。`);
-                e.preventDefault();
-                e.stopImmediatePropagation();
+        });
 
-                // 对特定网站进行适配
-                if (hostname.includes('chatgpt.com') || hostname.includes('gemini.google.com')) {
-                    // ChatGPT 和 Gemini: 模拟 Shift+Enter 是最可靠的换行方式
-                    console.log(`[${SCRIPT_NAME}] 适配[ChatGPT/Gemini]：模拟 Shift+Enter 换行。`);
-                    target.dispatchEvent(createKeyEvent('keydown', { shiftKey: true }));
-                } else {
-                    // 默认/后备策略 (适用于 Claude, Qwen 等): 使用 execCommand 插入换行符，兼容性好
-                    console.log(`[${SCRIPT_NAME}] 适配[默认/Claude/Qwen]：使用 execCommand 换行。`);
-                    document.execCommand('insertText', false, '\n');
-                }
-            }
-            // --- 其他情况 (如 Shift+Enter) ---
-            // 脚本不干预，允许其执行原生行为。
+        function initEnterInterceptor() {
+            if (!document.body) { setTimeout(initEnterInterceptor, 100); return; }
+            console.log(`[${SCRIPT_NAME}] DOM ready, 启动【回车增强-强力拦截版】。`);
+            document.querySelectorAll('textarea, div[contenteditable="true"]').forEach(attachInterceptor);
+            observer.observe(document.body, { childList: true, subtree: true });
+            console.log(`[${SCRIPT_NAME}] 强力拦截模块已启动，正在监视输入框...`);
+        }
 
-        }, true); // `true` 表示在捕获阶段执行
-
-        console.log(`[${SCRIPT_NAME}] 智能适配事件监听器已成功设置。`);
+        if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initEnterInterceptor); } else { initEnterInterceptor(); }
     })();
 
 })();
