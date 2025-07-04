@@ -10,6 +10,7 @@
 // @match        https://gemini.google.com/*
 // @match        https://claude.ai/*
 // @match        https://grok.com/*
+// @match        https://copilot.microsoft.com/*
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @run-at       document-start
