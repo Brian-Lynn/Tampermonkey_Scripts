@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         AI平台_Web体验优化 (强力拦截版 v6.5)
+// @name         AI平台_Web体验优化 (强力拦截版 v6.5.5-copilot-fix)
 // @namespace    http://tampermonkey.net/
-// @version      6.5
-// @description  【强力拦截版】1. 彻底阻止Enter键直接发送，改为Ctrl+Enter发送。为Qwen增加ID选择器，优先点击按钮发送。2. 支持点击复制数学公式的LaTeX代码。
-// @author       0xbbbb & Gemini & GPT (重构 by Gemini)
+// @version      6.5.5
+// @description  【强力拦截版】1. 彻底阻止Enter键直接发送，改为Ctrl+Enter发送。为Qwen增加ID选择器，优先点击按钮发送。2. 支持点击复制数学公式的LaTeX代码（已为Copilot修复v5-final）。
+// @author       0xbbbb & Gemini & GPT (重构 by Gemini, copilot-fix v5 by Gemini)
 // @match        https://chatgpt.com/*
 // @match        https://chat.deepseek.com/*
 // @match        https://chat.qwen.ai/*
@@ -21,21 +21,35 @@
 (function() {
     'use strict';
 
-    const SCRIPT_NAME = 'AIChatEnhancer-v6.5';
+    const SCRIPT_NAME = 'AIChatEnhancer-v6.5.5';
     const currentHostname = window.location.hostname;
 
-    // --- 模块一：公式复制器 ---
-    if (!currentHostname.includes('gemini.google.com') && !currentHostname.includes('claude.ai')) {
+    // --- 模块一：公式复制器 (v5 - 终极精准侦测) ---
+    if (
+        !currentHostname.includes('gemini.google.com') &&
+        !currentHostname.includes('claude.ai')
+    ) {
         (function FormulaCopier() {
              function initFormulaCopier() {
                 if (!document.body) { setTimeout(initFormulaCopier, 100); return; }
-                console.log(`[${SCRIPT_NAME}] DOM ready, 启动【公式复制器】。`);
-                GM_addStyle(`
+                console.log(`[${SCRIPT_NAME}] DOM ready, 启动【公式复制器 v5 - 终极精准侦测】。`);
+
+                const styles = `
                     .formula-copier-selected { outline: 2px solid #4A90E2 !important; border-radius: 5px; cursor: pointer; box-shadow: 0 0 5px rgba(74, 144, 226, 0.5); }
                     .formula-copier-feedback { position: fixed; background-color: #4A90E2; color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; z-index: 10001; pointer-events: none; opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease; transform: translateY(10px); }
                     .formula-copier-feedback.visible { opacity: 1; transform: translateY(0); }
-                `);
+                `;
+
+                if (currentHostname.includes('copilot.microsoft.com')) {
+                    const styleEl = document.createElement('style');
+                    styleEl.textContent = styles;
+                    document.head.appendChild(styleEl);
+                } else {
+                    GM_addStyle(styles);
+                }
+
                 let selectedElement = null;
+
                 function showCopyFeedback(element) {
                     const rect = element.getBoundingClientRect();
                     const feedback = document.createElement('div');
@@ -51,24 +65,67 @@
                         setTimeout(() => feedback.remove(), 300);
                     }, 1500);
                 }
+
                 function clearSelection() {
                     if (selectedElement) {
                         selectedElement.classList.remove('formula-copier-selected');
                         selectedElement = null;
                     }
                 }
+
+                // --- MODIFIED PART START ---
+                // 重写的 getLatexSource 函数，采用多种高精度侦测方案
                 function getLatexSource(containerElement) {
-                    const annotation = containerElement.querySelector('annotation[encoding="application/x-tex"], annotation[encoding="text/x-latex"]');
-                    return annotation ? annotation.textContent.trim().replace(/\s*\\tag\{.*\}/, '').trim() : null;
+                    // 方案一：标准 <annotation> 标签 (最高优先级)
+                    let annotation = containerElement.querySelector('annotation[encoding="application/x-tex"], annotation[encoding="text/x-latex"]');
+                    if (annotation) {
+                        return annotation.textContent.trim().replace(/\s*\\tag\{.*\}/, '').trim();
+                    }
+
+                    // 方案二: Shadow DOM 'raw' 属性 (针对 <cib-math> 宿主)
+                    let currentElement = containerElement;
+                    while (currentElement) {
+                        const root = currentElement.getRootNode();
+                        if (root instanceof ShadowRoot) {
+                            const host = root.host;
+                            if (host && host.tagName === 'CIB-MATH' && host.hasAttribute('raw')) {
+                                return host.getAttribute('raw').trim();
+                            }
+                            currentElement = host;
+                        } else {
+                            currentElement = null;
+                        }
+                    }
+
+                    // 方案三: <math> 标签的直接子文本节点 (解决“融合怪”问题的最终方案)
+                    const mathElement = containerElement.querySelector('math, [role="math"]');
+                    if (mathElement) {
+                        // 遍历 <math> 元素的所有直接子节点
+                        for (const child of mathElement.childNodes) {
+                            // 我们只关心类型为“文本”的节点
+                            if (child.nodeType === Node.TEXT_NODE) {
+                                const latex = child.textContent.trim();
+                                // 通过特征字符简单验证这确实是LaTeX源码
+                                if (latex.length > 1 && (latex.includes('\\') || latex.includes('^') || latex.includes('_') || latex.includes('{'))) {
+                                    return latex;
+                                }
+                            }
+                        }
+                    }
+
+                    // 所有高精度方案都失败
+                    return null;
                 }
-                function handleFormulaClick(event) {
-                    event.stopPropagation();
-                    const target = event.currentTarget;
+                // --- MODIFIED PART END ---
+
+                function processFormulaClick(target) {
                     if (target === selectedElement) {
                         const latex = getLatexSource(target);
                         if (latex) {
                             GM_setClipboard(latex);
                             showCopyFeedback(target);
+                        } else {
+                            console.warn(`[${SCRIPT_NAME}] 未能从元素中提取LaTeX源码:`, target);
                         }
                         clearSelection();
                     } else {
@@ -77,29 +134,31 @@
                         selectedElement.classList.add('formula-copier-selected');
                     }
                 }
-                function findAndBind(rootNode) {
-                    if (!rootNode || rootNode.nodeType !== Node.ELEMENT_NODE) return;
-                    const formulas = rootNode.querySelectorAll('.katex, .katex-display, .mjx-container');
-                    formulas.forEach(formula => {
-                        if (formula.dataset.formulaCopierAttached || formula.closest('[data-formula-copier-attached="true"]')) return;
-                        formula.dataset.formulaCopierAttached = 'true';
-                        formula.addEventListener('click', handleFormulaClick);
-                    });
-                }
-                const observer = new MutationObserver(mutations => {
-                    for (const mutation of mutations) {
-                        if (mutation.addedNodes.length) {
-                            mutation.addedNodes.forEach(node => findAndBind(node));
+
+                document.addEventListener('click', (event) => {
+                    const path = event.composedPath();
+                    let formulaElement = null;
+
+                    for (const element of path) {
+                        if (element.nodeType === Node.ELEMENT_NODE && element.classList && (
+                            element.classList.contains('katex') ||
+                            element.classList.contains('katex-display') ||
+                            element.classList.contains('mjx-container')
+                        )) {
+                            formulaElement = element;
+                            break;
                         }
                     }
-                });
-                findAndBind(document.body);
-                observer.observe(document.body, { childList: true, subtree: true });
-                document.addEventListener('click', (event) => {
-                    if (selectedElement && !selectedElement.contains(event.target)) {
+
+                    if (formulaElement) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        processFormulaClick(formulaElement);
+                    } else {
                         clearSelection();
                     }
                 }, true);
+
             }
             if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initFormulaCopier); } else { initFormulaCopier(); }
         })();
@@ -146,21 +205,18 @@
 
                 let sendButton;
 
-                // 核心修复：针对Qwen，优先使用ID选择器点击按钮
                 if (currentHostname.includes('qwen.ai')) {
                     sendButton = document.querySelector('#send-message-button');
                     if (sendButton && !sendButton.disabled) {
                         console.log(`[${SCRIPT_NAME}] 适配[Qwen]：通过ID找到发送按钮并执行 click()。`, sendButton);
                         sendButton.click();
-                        return; // 成功发送，任务结束
+                        return;
                     }
-                    // 如果找不到按钮，才使用备用的高级模拟方案
                     console.warn(`[${SCRIPT_NAME}] 适配[Qwen]：ID选择器未找到按钮，回退到高级事件模拟。`);
                     simulateAdvancedEnter(e.target);
                     return;
                 }
 
-                // 其他网站的逻辑保持不变
                 if (currentHostname.includes('chatgpt.com')) {
                     sendButton = document.querySelector('button[data-testid="send-button"]');
                 } else if (currentHostname.includes('claude.ai')) {
