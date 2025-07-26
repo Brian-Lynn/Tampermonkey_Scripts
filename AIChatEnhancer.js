@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         AI平台_Web体验优化 (强力拦截版 v6.5.5-copilot-fix)
+// @name         AI平台_Web体验优化
 // @namespace    http://tampermonkey.net/
 // @version      6.5.5
 // @description  【强力拦截版】1. 彻底阻止Enter键直接发送，改为Ctrl+Enter发送。为Qwen增加ID选择器，优先点击按钮发送。2. 支持点击复制数学公式的LaTeX代码（已为Copilot修复v5-final）。
